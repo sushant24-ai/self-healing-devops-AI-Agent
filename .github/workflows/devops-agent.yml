@@ -1,0 +1,67 @@
+# GitHub Actions workflow: DevOps Agent — Self-Healing Pipeline
+#
+# This workflow triggers when ANY other workflow in the repo fails.
+# It runs the DevOps Agent to analyze, classify, and potentially auto-fix the failure.
+#
+# SETUP REQUIRED:
+# 1. Add these secrets to your repo:
+#    - OPENAI_API_KEY:    Your OpenAI API key
+#    - TEAMS_WEBHOOK_URL: Microsoft Teams incoming webhook URL (optional)
+# 2. The default GITHUB_TOKEN is used for repo operations.
+#    For cross-repo or org-wide use, create a GitHub App or fine-grained PAT.
+
+name: DevOps Agent
+
+on:
+  workflow_run:
+    # Monitor ALL workflows — the agent will analyze any failure
+    workflows: ["*"]
+    types:
+      - completed
+
+# Prevent multiple agent runs from conflicting
+concurrency:
+  group: devops-agent-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # To create branches, commit fixes, update aifix.md
+  pull-requests: write   # To create PRs
+  actions: read          # To download logs and check workflow status
+
+jobs:
+  self-heal:
+    # Only run when a workflow FAILS (not on success/cancellation)
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    
+    runs-on: ubuntu-latest
+    
+    timeout-minutes: 15   # Safety: kill the agent after 15 min
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install agent dependencies
+        run: |
+          pip install -r devops-agent/requirements.txt
+
+      - name: Run DevOps Agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          python -m agent.main \
+            --repo "${{ github.repository }}" \
+            --run-id "${{ github.event.workflow_run.id }}"
+        working-directory: devops-agent
+
+      - name: Agent completed
+        if: always()
+        run: echo "DevOps Agent finished processing run ${{ github.event.workflow_run.id }}"
