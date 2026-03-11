@@ -58,13 +58,18 @@ class DevOpsAgent:
     def __init__(
         self,
         github_token: str | None = None,
-        openai_api_key: str | None = None,
+        llm_api_key: str | None = None,
         teams_webhook_url: str | None = None,
-        llm_model: str = "gpt-4o",
+        llm_model: str | None = None,
+        llm_provider: str | None = None,
         dry_run: bool = False,
     ):
         self.gh = GitHubClient(github_token)
-        self.llm = LLMClient(openai_api_key, model=llm_model)
+        self.llm = LLMClient(
+            api_key=llm_api_key,
+            model=llm_model,
+            provider=llm_provider,
+        )
         self.notifier = TeamsNotifier(teams_webhook_url)
         self.dry_run = dry_run
 
@@ -593,14 +598,33 @@ def main():
     parser.add_argument("--repo", required=True, help="Repository (owner/repo)")
     parser.add_argument("--run-id", required=True, type=int, help="Workflow run ID")
     parser.add_argument("--dry-run", action="store_true", help="Don't push changes")
-    parser.add_argument("--model", default="gpt-4o", help="LLM model to use")
+    parser.add_argument(
+        "--provider",
+        choices=["openai", "anthropic", "gemini"],
+        default=None,
+        help="LLM provider (auto-detected from model name if not set)",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="LLM model (e.g. gpt-4o, claude-sonnet-4-20250514, gemini-2.0-flash)",
+    )
     args = parser.parse_args()
+
+    # API key: check provider-specific env vars, then generic fallback
+    llm_api_key = (
+        os.environ.get("LLM_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+    )
 
     agent = DevOpsAgent(
         github_token=os.environ.get("GITHUB_TOKEN"),
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
+        llm_api_key=llm_api_key,
         teams_webhook_url=os.environ.get("TEAMS_WEBHOOK_URL"),
         llm_model=args.model,
+        llm_provider=args.provider,
         dry_run=args.dry_run,
     )
 

@@ -4,11 +4,14 @@
 # It runs the DevOps Agent to analyze, classify, and potentially auto-fix the failure.
 #
 # SETUP REQUIRED:
-# 1. Add these secrets to your repo:
-#    - OPENAI_API_KEY:    Your OpenAI API key
-#    - TEAMS_WEBHOOK_URL: Microsoft Teams incoming webhook URL (optional)
-# 2. The default GITHUB_TOKEN is used for repo operations.
-#    For cross-repo or org-wide use, create a GitHub App or fine-grained PAT.
+# 1. Add ONE of these API key secrets (depending on your chosen provider):
+#    - OPENAI_API_KEY:      For GPT models (gpt-4o, gpt-4o-mini, etc.)
+#    - ANTHROPIC_API_KEY:   For Claude models (claude-sonnet-4-20250514, etc.)
+#    - GEMINI_API_KEY:      For Gemini models (gemini-2.0-flash, etc.)
+#    Or use the generic LLM_API_KEY secret (works with any provider).
+# 2. Optional secrets:
+#    - TEAMS_WEBHOOK_URL:   Microsoft Teams incoming webhook URL
+# 3. Configure LLM_PROVIDER and LLM_MODEL below to choose your provider.
 
 name: DevOps Agent
 
@@ -28,6 +31,22 @@ permissions:
   contents: write        # To create branches, commit fixes, update aifix.md
   pull-requests: write   # To create PRs
   actions: read          # To download logs and check workflow status
+
+# ============================================================
+# 🔧 CONFIGURE YOUR LLM PROVIDER HERE
+# ============================================================
+# Options for LLM_PROVIDER: openai, anthropic, gemini
+# If not set, the provider is auto-detected from the model name.
+#
+# Popular models:
+#   OpenAI:    gpt-4o, gpt-4o-mini, gpt-4-turbo, o3-mini
+#   Anthropic: claude-sonnet-4-20250514, claude-3-5-haiku-20241022
+#   Gemini:    gemini-2.0-flash, gemini-2.5-pro
+# ============================================================
+
+env:
+  LLM_PROVIDER: ""              # Set to: openai, anthropic, or gemini
+  LLM_MODEL: ""                 # Set to specific model or leave empty for default
 
 jobs:
   self-heal:
@@ -54,12 +73,24 @@ jobs:
       - name: Run DevOps Agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # API Keys — set the one matching your provider
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
-          python -m agent.main \
-            --repo "${{ github.repository }}" \
-            --run-id "${{ github.event.workflow_run.id }}"
+          ARGS="--repo ${{ github.repository }} --run-id ${{ github.event.workflow_run.id }}"
+          
+          if [ -n "$LLM_PROVIDER" ]; then
+            ARGS="$ARGS --provider $LLM_PROVIDER"
+          fi
+          
+          if [ -n "$LLM_MODEL" ]; then
+            ARGS="$ARGS --model $LLM_MODEL"
+          fi
+          
+          python -m agent.main $ARGS
         working-directory: devops-agent
 
       - name: Agent completed

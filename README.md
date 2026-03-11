@@ -2,6 +2,8 @@
 
 A GitHub Action agent that monitors your CI/CD workflows, automatically fixes code-level failures, and notifies your team for issues that need human intervention.
 
+**Supports OpenAI (GPT), Anthropic (Claude), and Google (Gemini)** — configurable provider and model version.
+
 ## ✨ Key Feature: `aifix.md` Memory
 
 The agent maintains an `aifix.md` file in your repo that stores every successful fix. **Before calling any LLM**, the agent checks this file first. If a known fix matches the current error, it's applied instantly — **zero LLM cost, sub-second response**.
@@ -22,26 +24,45 @@ Workflow Fails → Download Logs → Smart Log Parser (10k → ~80 lines)
 
 ## 🚀 Quick Setup
 
-### 1. Add Secrets to Your Repo
+### 1. Add API Key Secret (ONE of these)
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `OPENAI_API_KEY` | ✅ Yes | Your OpenAI API key for fix generation |
-| `TEAMS_WEBHOOK_URL` | ⬜ Optional | Microsoft Teams incoming webhook URL |
+| Secret | Provider | Models |
+|--------|----------|--------|
+| `OPENAI_API_KEY` | OpenAI | `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o3-mini` |
+| `ANTHROPIC_API_KEY` | Anthropic | `claude-sonnet-4-20250514`, `claude-3-5-haiku-20241022` |
+| `GEMINI_API_KEY` | Google | `gemini-2.0-flash`, `gemini-2.5-pro` |
+| `LLM_API_KEY` | Any (generic) | Works with any provider |
+
+> Only ONE API key is needed. Choose your preferred LLM provider.
+
+### 2. Optional Secrets
+
+| Secret | Description |
+|--------|-------------|
+| `TEAMS_WEBHOOK_URL` | Microsoft Teams incoming webhook URL |
 
 > The `GITHUB_TOKEN` is automatically provided by GitHub Actions.
 
-### 2. Copy the Workflow
+### 3. Configure Provider (in workflow YAML)
 
-Copy `.github/workflows/devops-agent.yml` to your repo's `.github/workflows/` directory.
+Edit `.github/workflows/devops-agent.yml`:
 
-### 3. Copy the Agent Code
+```yaml
+env:
+  LLM_PROVIDER: "anthropic"              # openai | anthropic | gemini
+  LLM_MODEL: "claude-sonnet-4-20250514"         # specific model version
+```
 
-Copy the `agent/` directory and `requirements.txt` to your repo root.
+Or leave both empty — the provider is auto-detected from the model name.
 
-### 4. Done!
+### 4. Copy & Deploy
 
-The agent will automatically trigger whenever any workflow in your repo fails.
+Copy these into your repo:
+- `agent/` directory
+- `requirements.txt`
+- `.github/workflows/devops-agent.yml`
+
+Done! The agent triggers automatically on any workflow failure.
 
 ## 📁 Project Structure
 
@@ -54,7 +75,7 @@ devops-agent/
 │   ├── memory.py            # aifix.md read/write/search
 │   ├── log_parser.py        # Smart log extraction (10k → 80 lines)
 │   ├── classifier.py        # 2-tier failure classification
-│   ├── fixer.py             # LLM-powered fix generation
+│   ├── fixer.py             # Multi-provider LLM fix generation
 │   ├── github_ops.py        # GitHub API operations
 │   └── notifier.py          # Teams webhook notifications
 ├── tests/
@@ -79,6 +100,11 @@ devops-agent/
 - Confidence increases with each successful reuse
 - **Result: Recurring errors fixed for $0**
 
+### Multi-Provider LLM Support
+- **Auto-detection**: Pass `--model claude-sonnet-4-20250514` and the agent automatically uses the Anthropic API
+- **Explicit control**: Use `--provider gemini --model gemini-2.5-pro` for full control
+- **Smart API key resolution**: Checks `LLM_API_KEY` → provider-specific env var → configured default
+
 ### Failure Classification
 - **Tier 1 (Pattern Match):** Known error patterns → instant classification, no LLM
 - **Tier 2 (LLM):** Novel errors → LLM classifies as code/config/infra/transient/secret
@@ -101,31 +127,44 @@ python -m pytest tests/ -v
 ## 🔧 Local Testing (Dry Run)
 
 ```bash
-cd devops-agent
-python -m agent.main \
-  --repo "owner/repo" \
-  --run-id 12345 \
-  --dry-run
+# Using OpenAI (default)
+python -m agent.main --repo "owner/repo" --run-id 12345 --dry-run
+
+# Using Claude
+python -m agent.main --repo "owner/repo" --run-id 12345 --dry-run \
+  --provider anthropic --model claude-sonnet-4-20250514
+
+# Using Gemini
+python -m agent.main --repo "owner/repo" --run-id 12345 --dry-run \
+  --provider gemini --model gemini-2.0-flash
+
+# Auto-detect provider from model name
+python -m agent.main --repo "owner/repo" --run-id 12345 --dry-run \
+  --model gpt-4o-mini
 ```
 
 ## ⚙️ Configuration
 
-Environment variables:
+### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `GITHUB_TOKEN` | GitHub token with repo + actions permissions |
-| `OPENAI_API_KEY` | OpenAI API key |
+| `LLM_API_KEY` | Generic API key (works with any provider) |
+| `OPENAI_API_KEY` | OpenAI-specific API key |
+| `ANTHROPIC_API_KEY` | Anthropic-specific API key |
+| `GEMINI_API_KEY` | Google Gemini-specific API key |
 | `TEAMS_WEBHOOK_URL` | Teams webhook URL (optional) |
 
-CLI arguments:
+### CLI Arguments
 
 | Argument | Description |
 |----------|-------------|
 | `--repo` | Repository in `owner/repo` format |
 | `--run-id` | Failed workflow run ID |
+| `--provider` | LLM provider: `openai`, `anthropic`, `gemini` (auto-detected if not set) |
+| `--model` | Specific model version (e.g. `gpt-4o-mini`, `claude-sonnet-4-20250514`, `gemini-2.0-flash`) |
 | `--dry-run` | Analyze but don't push changes |
-| `--model` | LLM model to use (default: `gpt-4o`) |
 
 ## 🛡️ Safety Features
 

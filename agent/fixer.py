@@ -1,7 +1,8 @@
 """
 fixer.py — LLM-Powered Fix Generation
 
-Generates code fixes using an LLM (OpenAI API).
+Generates code fixes using any LLM provider (OpenAI, Anthropic Claude, Google Gemini).
+Provider and model version are fully configurable.
 Builds a focused context package and parses structured fix responses.
 """
 
@@ -9,11 +10,52 @@ import os
 import re
 import json
 from dataclasses import dataclass
+from enum import Enum
 
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None  # type: ignore
+
+# ---------------------------------------------------------------------------
+# Provider detection
+# ---------------------------------------------------------------------------
+
+class LLMProvider(Enum):
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
+
+
+# Default models per provider
+DEFAULT_MODELS: dict[str, str] = {
+    "openai": "gpt-4o",
+    "anthropic": "claude-sonnet-4-20250514",
+    "gemini": "gemini-2.0-flash",
+}
+
+# Mapping: model name prefix → provider (for auto-detection)
+MODEL_PREFIX_MAP: list[tuple[str, LLMProvider]] = [
+    ("gpt-", LLMProvider.OPENAI),
+    ("o1", LLMProvider.OPENAI),
+    ("o3", LLMProvider.OPENAI),
+    ("o4", LLMProvider.OPENAI),
+    ("claude-", LLMProvider.ANTHROPIC),
+    ("gemini-", LLMProvider.GEMINI),
+]
+
+# Env var for API key per provider
+API_KEY_ENV_MAP: dict[LLMProvider, str] = {
+    LLMProvider.OPENAI: "OPENAI_API_KEY",
+    LLMProvider.ANTHROPIC: "ANTHROPIC_API_KEY",
+    LLMProvider.GEMINI: "GEMINI_API_KEY",
+}
+
+
+def detect_provider(model: str) -> LLMProvider:
+    """Auto-detect the LLM provider from the model name."""
+    model_lower = model.lower()
+    for prefix, provider in MODEL_PREFIX_MAP:
+        if model_lower.startswith(prefix):
+            return provider
+    # Default fallback
+    return LLMProvider.OPENAI
 
 
 # ---------------------------------------------------------------------------
@@ -41,37 +83,120 @@ class FixProposal:
 
 
 # ---------------------------------------------------------------------------
-# LLM Client
+# LLM Client — Multi-Provider
 # ---------------------------------------------------------------------------
 
 class LLMClient:
-    """Wrapper around OpenAI API for fix generation."""
+    """
+    Universal LLM client supporting OpenAI, Anthropic Claude, and Google Gemini.
 
-    def __init__(self, api_key: str | None = None, model: str = "gpt-4o"):
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        self.model = model
+    Usage:
+        # Auto-detect provider from model name
+        llm = LLMClient(model="claude-sonnet-4-20250514")
+        llm = LLMClient(model="gpt-4o")
+        llm = LLMClient(model="gemini-2.0-flash")
+
+        # Explicit provider
+        llm = LLMClient(provider="anthropic", model="claude-sonnet-4-20250514")
+
+        # Custom API key
+        llm = LLMClient(api_key="sk-...", model="gpt-4o-mini")
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+    ):
+        # Resolve provider
+        if provider:
+            self.provider = LLMProvider(provider.lower())
+        elif model:
+            self.provider = detect_provider(model)
+        else:
+            self.provider = LLMProvider.OPENAI
+
+        # Resolve model
+        self.model = model or DEFAULT_MODELS.get(self.provider.value, "gpt-4o")
+
+        # Resolve API key: explicit > env var
+        env_key = API_KEY_ENV_MAP.get(self.provider, "OPENAI_API_KEY")
+        self.api_key = api_key or os.environ.get(env_key, "")
+
         self._client = None
 
-    @property
-    def client(self):
-        if self._client is None:
-            if OpenAI is None:
-                raise ImportError("openai package not installed. Run: pip install openai")
-            self._client = OpenAI(api_key=self.api_key)
-        return self._client
+        print(f"  [LLM] Provider: {self.provider.value} | Model: {self.model}")
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         """Send a prompt to the LLM and return the response text."""
-        response = self.client.chat.completions.create(
+        if self.provider == LLMProvider.OPENAI:
+            return self._generate_openai(system_prompt, user_prompt)
+        elif self.provider == LLMProvider.ANTHROPIC:
+            return self._generate_anthropic(system_prompt, user_prompt)
+        elif self.provider == LLMProvider.GEMINI:
+            return self._generate_gemini(system_prompt, user_prompt)
+        else:
+            raise ValueError(f"Unsupported provider: {self.provider}")
+
+    # --- OpenAI ---
+    def _generate_openai(self, system_prompt: str, user_prompt: str) -> str:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+
+        client = OpenAI(api_key=self.api_key)
+        response = client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.2,  # Low temp for deterministic fixes
+            temperature=0.2,
             max_tokens=4000,
         )
         return response.choices[0].message.content or ""
+
+    # --- Anthropic Claude ---
+    def _generate_anthropic(self, system_prompt: str, user_prompt: str) -> str:
+        try:
+            import anthropic
+        except ImportError:
+            raise ImportError("anthropic package not installed. Run: pip install anthropic")
+
+        client = anthropic.Anthropic(api_key=self.api_key)
+        response = client.messages.create(
+            model=self.model,
+            max_tokens=4000,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+        # Anthropic returns content blocks
+        return response.content[0].text if response.content else ""
+
+    # --- Google Gemini ---
+    def _generate_gemini(self, system_prompt: str, user_prompt: str) -> str:
+        try:
+            from google import genai
+        except ImportError:
+            raise ImportError(
+                "google-genai package not installed. Run: pip install google-genai"
+            )
+
+        client = genai.Client(api_key=self.api_key)
+        response = client.models.generate_content(
+            model=self.model,
+            contents=f"{system_prompt}\n\n{user_prompt}",
+            config={
+                "temperature": 0.2,
+                "max_output_tokens": 4000,
+            },
+        )
+        return response.text or ""
 
 
 # ---------------------------------------------------------------------------
